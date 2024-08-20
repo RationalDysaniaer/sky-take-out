@@ -19,6 +19,7 @@ import com.sky.vo.OrderPaymentVO;
 import com.sky.vo.OrderStatisticsVO;
 import com.sky.vo.OrderSubmitVO;
 import com.sky.vo.OrderVO;
+import com.sky.websocket.WebSocketServer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +52,8 @@ public class OrderServiceImpl implements OrderService {
     private AddressBookMapper addressBookMapper;
     @Autowired
     private WeChatPayUtil weChatPayUtil;
+    @Autowired
+    private WebSocketServer webSocketServer;
 
     /**
      * 用户下单
@@ -157,18 +160,6 @@ public class OrderServiceImpl implements OrderService {
         Long userId = BaseContext.getCurrentId();
         User user = userMapper.getById(userId);
 
-//        //调用微信支付接口，生成预支付交易单
-//        JSONObject jsonObject = weChatPayUtil.pay(
-//                ordersPaymentDTO.getOrderNumber(), //商户订单号
-//                new BigDecimal(0.01), //支付金额，单位 元
-//                "苍穹外卖订单", //商品描述
-//                user.getOpenid() //微信用户的openid
-//        );
-//
-//        if (jsonObject.getString("code") != null && jsonObject.getString("code").equals("ORDERPAID")) {
-//            throw new OrderBusinessException("该订单已支付");
-//        }
-
         JSONObject jsonObject = new JSONObject();
         jsonObject.put("code", "ORDERPAID");
 
@@ -176,23 +167,8 @@ public class OrderServiceImpl implements OrderService {
         vo.setPackageStr(jsonObject.getString("package"));
 
         // 替代微信支付成功后的数据库订单状态更新，直接在这里更新了
-        // 根据订单号查询当前用户的该订单
-        Orders ordersDB = orderMapper.getByNumberAndUserId(ordersPaymentDTO.getOrderNumber(), userId);
-
-        // 根据订单id更新订单的状态、支付方式、支付状态、结账时间
-        Orders orders=new Orders();
-        orders.setId(ordersDB.getId());
-        orders.setStatus(Orders.TO_BE_CONFIRMED);
-        orders.setPayStatus(Orders.PAID);
-        orders.setCheckoutTime(LocalDateTime.now());
-//        Orders orders = Orders.builder()
-//                .id(ordersDB.getId())
-//                .status(Orders.TO_BE_CONFIRMED) // 订单状态，待接单
-//                .payStatus(Orders.PAID) // 支付状态，已支付
-//                .checkoutTime(LocalDateTime.now()) // 更新支付时间
-//                .build();
-
-        orderMapper.update(orders);
+        // 调用支付成功方法
+        paySuccess(ordersPaymentDTO.getOrderNumber());
 
         return vo;
     }
@@ -206,8 +182,11 @@ public class OrderServiceImpl implements OrderService {
      */
     public void paySuccess(String outTradeNo) {
 
-        // 根据订单号查询订单
-        Orders ordersDB = orderMapper.getByNumber(outTradeNo);
+        // 当前登录用户id
+        Long userId = BaseContext.getCurrentId();
+
+        // 根据订单号查询当前用户的订单
+        Orders ordersDB = orderMapper.getByNumberAndUserId(outTradeNo, userId);
 
         // 根据订单id更新订单的状态、支付方式、支付状态、结账时间
         Orders orders = Orders.builder()
@@ -218,6 +197,17 @@ public class OrderServiceImpl implements OrderService {
                 .build();
 
         orderMapper.update(orders);
+
+        //////////////////////////////////////////////
+        Map map = new HashMap();
+        map.put("type", 1);//消息类型，1表示来单提醒
+        map.put("orderId", orders.getId());
+        map.put("content", "订单号：" + outTradeNo);
+
+        //通过WebSocket实现来单提醒，向客户端浏览器推送消息
+        webSocketServer.sendToAllClient(JSON.toJSONString(map));
+        ///////////////////////////////////////////////////
+
     }
 
 }
